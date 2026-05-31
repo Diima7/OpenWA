@@ -51,6 +51,7 @@ export interface WhatsAppWebJsConfig {
 }
 
 export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngine {
+  private readonly browserPollEnabled = process.env.CRAFTX_OPENWA_ENABLE_BROWSER_POLL === 'true';
   private client: Client | null = null;
   private status: EngineStatus = EngineStatus.DISCONNECTED;
   private qrCode: string | null = null;
@@ -137,12 +138,16 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         this.phoneNumber = info?.wid?.user || null;
         this.pushName = info?.pushname || null;
         this.setStatus(EngineStatus.READY);
-        void this.startIncomingMessagePoll();
+        if (this.browserPollEnabled) {
+          void this.startIncomingMessagePoll();
+        }
         this.callbacks.onReady?.(this.phoneNumber || '', this.pushName || '');
       } catch (error) {
         this.logger.error('Error getting client info', String(error));
         this.setStatus(EngineStatus.READY);
-        void this.startIncomingMessagePoll();
+        if (this.browserPollEnabled) {
+          void this.startIncomingMessagePoll();
+        }
         this.callbacks.onReady?.('', '');
       }
     });
@@ -272,6 +277,10 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   }
 
   private async startIncomingMessagePoll(): Promise<void> {
+    if (!this.browserPollEnabled) {
+      return;
+    }
+
     if (this.incomingPollTimer) return;
 
     this.browserPollStartedAt = Math.floor(Date.now() / 1000);
@@ -358,6 +367,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         this.callbacks.onMessage?.(message);
       }
     } catch (error) {
+      const details = String(error);
+      if (details.includes('detached Frame')) {
+        this.logger.warn('WhatsApp browser message poll stopped after detached frame; waiting for next ready event before polling again');
+        this.stopIncomingMessagePoll();
+        return;
+      }
+
       this.logger.warn('WhatsApp browser message poll failed', String(error));
     }
   }
