@@ -181,14 +181,79 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
           return undefined;
         };
 
+        const resolveLidPhone = async (lid: string): Promise<string | undefined> => {
+          try {
+            const wwebClient: any = this.client;
+            if (typeof wwebClient.getContactLidAndPhone === 'function') {
+              const mapped = await wwebClient.getContactLidAndPhone(lid);
+              const entry = Array.isArray(mapped) ? mapped[0] : mapped;
+              const pn = serializeWid(entry?.pn);
+              if (pn && !pn.endsWith('@lid')) {
+                return pn;
+              }
+            }
+          } catch (error) {
+            this.logger.warn('Unable to resolve WhatsApp LID via getContactLidAndPhone', String(error));
+          }
+
+          try {
+            const page: any = (this.client as any)?.pupPage;
+            if (page) {
+              const resolved = await page.evaluate((lidValue: string) => {
+                try {
+                  const apiContact = (window as any).require?.('WAWebApiContact');
+                  const widFactory = (window as any).require?.('WAWebWidFactory');
+                  if (!apiContact?.getPhoneNumber || !widFactory?.createWid) return undefined;
+                  const wid = widFactory.createWid(lidValue);
+                  const pn = apiContact.getPhoneNumber(wid);
+                  if (!pn) return undefined;
+                  if (typeof pn === 'string') return pn;
+                  if (typeof pn._serialized === 'string') return pn._serialized;
+                  if (typeof pn.user === 'string' && typeof pn.server === 'string') return pn.user + '@' + pn.server;
+                  return undefined;
+                } catch (pageError) {
+                  return undefined;
+                }
+              }, lid);
+              if (typeof resolved === 'string' && resolved && !resolved.endsWith('@lid')) {
+                return resolved;
+              }
+            }
+          } catch (error) {
+            this.logger.warn('Unable to resolve WhatsApp LID via page evaluate', String(error));
+          }
+
+          try {
+            const contact: any = await msg.getContact();
+            const contactId = serializeWid(contact?.id);
+            if (contactId && !contactId.endsWith('@lid')) {
+              return contactId;
+            }
+            const rawNumber = contact?.number ?? contact?.id?.user;
+            if (rawNumber) {
+              const digits = String(rawNumber).replace(/[^0-9]/g, '');
+              if (digits.length >= 8 && digits.length <= 15) {
+                return digits + '@c.us';
+              }
+            }
+          } catch (error) {
+            this.logger.warn('Unable to resolve WhatsApp LID via getContact', String(error));
+          }
+
+          return undefined;
+        };
+
         const rawFrom = serializeWid(msg.from);
-        const senderPhone = serializeWid(msg?.senderObj?.phoneNumber)
+        let senderPhone = serializeWid(msg?.senderObj?.phoneNumber)
           ?? serializeWid(msg?.senderObj?.__x_phoneNumber)
           ?? serializeWid(msg?._data?.senderObj?.phoneNumber)
           ?? serializeWid(msg?._data?.senderObj?.__x_phoneNumber);
+        if (rawFrom?.endsWith('@lid') && (!senderPhone || senderPhone.endsWith('@lid'))) {
+          senderPhone = await resolveLidPhone(rawFrom);
+        }
         const from = rawFrom?.endsWith('@lid') && senderPhone ? senderPhone : rawFrom;
         const to = serializeWid(msg.to);
-        if (rawFrom?.endsWith('@lid') && !senderPhone) {
+        if (rawFrom?.endsWith('@lid') && (!senderPhone || senderPhone.endsWith('@lid'))) {
           this.recentlyHandledMessageIds.delete(messageId);
           this.logger.warn(`Ignoring ${source} event with unresolved WhatsApp LID sender`, {
             messageId,
@@ -435,10 +500,28 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
 
           const id = model?.id?._serialized ?? model?.id?.id ?? model?.id;
           const modelFrom = serializeWid(model?.from);
-          const senderPhone = serializeWid(msg?.senderObj?.phoneNumber)
+          const resolveLidPn = (lidValue: string | undefined): string | undefined => {
+            if (!lidValue) return undefined;
+            try {
+              const apiContact = (window as any).require?.('WAWebApiContact');
+              const widFactory = (window as any).require?.('WAWebWidFactory');
+              if (!apiContact?.getPhoneNumber || !widFactory?.createWid) return undefined;
+              const lidWid = widFactory.createWid(lidValue);
+              const pn = apiContact.getPhoneNumber(lidWid);
+              const serialized = serializeWid(pn);
+              return serialized && !serialized.endsWith('@lid') ? serialized : undefined;
+            } catch (error) {
+              return undefined;
+            }
+          };
+
+          let senderPhone = serializeWid(msg?.senderObj?.phoneNumber)
             ?? serializeWid(msg?.senderObj?.__x_phoneNumber)
             ?? serializeWid(msg?.__x_senderObj?.phoneNumber)
             ?? serializeWid(msg?.__x_senderObj?.__x_phoneNumber);
+          if (modelFrom?.endsWith('@lid') && !senderPhone) {
+            senderPhone = resolveLidPn(modelFrom);
+          }
           if (modelFrom?.endsWith('@lid') && !senderPhone) {
             return null;
           }
