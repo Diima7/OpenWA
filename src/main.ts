@@ -136,7 +136,9 @@ async function bootstrap() {
       transformOptions: {
         enableImplicitConversion: true,
       },
-      disableErrorMessages: process.env.NODE_ENV === 'production', // Hide details in prod
+      // Always return validation detail. OpenWA runs on a private network and its responses are
+      // consumed (and logged) by CraftX, so surfacing the failing field is worth more than hiding it.
+      disableErrorMessages: false,
     }),
   );
 
