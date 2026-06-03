@@ -19,6 +19,8 @@ import {
   Label,
   Channel,
   ChannelMessage,
+  ChatSummary,
+  HistoryMessage,
   Status,
   TextStatusOptions,
   StatusResult,
@@ -706,6 +708,53 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     this.ensureReady();
     const numberId = await this.client!.getNumberId(number);
     return numberId !== null;
+  }
+
+  /**
+   * Lists 1:1 chats from the already-synced local Store. This is NOT a server-side
+   * per-number query — it reads what the browser session already holds, so it carries
+   * none of the ban risk of number enumeration. Groups are filtered out.
+   */
+  async getChats(): Promise<ChatSummary[]> {
+    this.ensureReady();
+    const chats = await this.client!.getChats();
+
+    return chats
+      .filter(chat => !chat.isGroup)
+      .map(chat => ({
+        id: chat.id._serialized,
+        name: chat.name,
+        number: chat.id.user ?? '',
+        isGroup: false,
+        timestamp: typeof chat.timestamp === 'number' ? chat.timestamp : undefined,
+        unreadCount: typeof chat.unreadCount === 'number' ? chat.unreadCount : undefined,
+        lastMessagePreview:
+          chat.lastMessage && typeof chat.lastMessage.body === 'string'
+            ? chat.lastMessage.body.slice(0, 200)
+            : undefined,
+      }));
+  }
+
+  /**
+   * Reads the last `limit` messages of a single chat from the local Store (fetchMessages).
+   * Read-only; returns text + metadata only (no media binaries — CraftX imports those lazily).
+   */
+  async getChatHistory(chatId: string, limit: number = 100): Promise<HistoryMessage[]> {
+    this.ensureReady();
+    const chat = await this.client!.getChatById(chatId);
+    const messages = await chat.fetchMessages({ limit });
+
+    return messages.map(msg => ({
+      id: msg.id._serialized,
+      fromMe: Boolean(msg.fromMe),
+      from: String(msg.from ?? ''),
+      to: msg.to ? String(msg.to) : undefined,
+      body: String(msg.body ?? ''),
+      type: String(msg.type ?? 'chat'),
+      timestamp: Number(msg.timestamp),
+      hasMedia: Boolean(msg.hasMedia),
+      ack: typeof msg.ack === 'number' ? msg.ack : undefined,
+    }));
   }
 
   async getGroups(): Promise<Group[]> {

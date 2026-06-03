@@ -157,6 +157,32 @@ export interface ChannelMessage {
   mediaUrl?: string;
 }
 
+// Read-only chat browsing (served from the already-synced local Store; no network
+// enumeration / number probing — consumed by CraftX's opt-in history import).
+export interface ChatSummary {
+  id: string; // serialized chat id, e.g. "4917...@c.us"
+  name?: string;
+  number: string; // bare phone (chat.id.user), empty for groups
+  isGroup: boolean;
+  timestamp?: number; // last activity, unix seconds
+  unreadCount?: number;
+  lastMessagePreview?: string;
+}
+
+export interface HistoryMessage {
+  id: string;
+  fromMe: boolean;
+  from: string;
+  to?: string;
+  body: string;
+  type: string;
+  timestamp: number; // unix seconds
+  hasMedia: boolean;
+  ack?: number;
+  mediaMimetype?: string;
+  mediaFilename?: string;
+}
+
 // Phase 3: Catalog (WhatsApp Business)
 export interface Catalog {
   id: string;
@@ -240,6 +266,10 @@ export interface IWhatsAppEngine {
   getContacts(): Promise<Contact[]>;
   getContactById(contactId: string): Promise<Contact | null>;
   checkNumberExists(number: string): Promise<boolean>;
+
+  // Chats / History (read-only, local Store — no number probing)
+  getChats(): Promise<ChatSummary[]>;
+  getChatHistory(chatId: string, limit?: number): Promise<HistoryMessage[]>;
 
   // Groups - Basic
   getGroups(): Promise<Group[]>;
