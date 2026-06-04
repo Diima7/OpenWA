@@ -437,6 +437,42 @@ export class SessionService implements OnModuleDestroy, OnModuleInit {
     return this.findOne(id);
   }
 
+  /**
+   * Re-pair the session in place: log out (revoke the linked device + wipe persisted auth) and
+   * re-initialize the SAME session so it emits a fresh QR. Unlike delete + recreate this keeps the
+   * session id and name stable, so callers never accumulate orphaned sessions or chase a changed id.
+   */
+  async relink(id: string): Promise<Session> {
+    const session = await this.findOne(id);
+    this.cancelReconnect(id);
+
+    const engine = this.engines.get(id);
+    if (engine) {
+      // Live client: logout revokes the device server-side and (in the adapter) wipes LocalAuth.
+      await engine.logout();
+      this.engines.delete(id);
+    } else {
+      // No live client to revoke (e.g. right after an OpenWA restart): still wipe persisted auth via
+      // a throwaway engine so the re-init below starts from a fresh QR instead of restoring the old
+      // number. logout() with no live client just clears the on-disk LocalAuth folder.
+      await this.engineFactory
+        .create({
+          sessionId: session.name,
+          proxyUrl: session.proxyUrl || undefined,
+          proxyType: session.proxyType || undefined,
+        })
+        .logout();
+    }
+
+    this.logger.log(`Session relink: ${session.name}`, {
+      sessionId: id,
+      action: 'relink',
+    });
+
+    // Fresh start → emits a new QR (start() sets reconnect state and initializes the engine).
+    return this.start(id);
+  }
+
   async getQRCode(id: string): Promise<{ qrCode: string; status: SessionStatus }> {
     const session = await this.findOne(id);
     const engine = this.engines.get(id);
