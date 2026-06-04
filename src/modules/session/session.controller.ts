@@ -164,6 +164,27 @@ export class SessionController {
     return this.transformSession(session);
   }
 
+  @Post(':id/relink')
+  @RequireRole(ApiKeyRole.OPERATOR)
+  @ApiOperation({
+    summary: 'Re-pair a session in place: log out, clear auth, and emit a fresh QR',
+  })
+  @ApiParam({ name: 'id', description: 'Session ID' })
+  @ApiResponse({
+    status: 201,
+    description: 'Session re-paired; a new QR will be generated',
+    type: SessionResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Session not found' })
+  async relink(@Param('id') id: string): Promise<SessionResponseDto> {
+    const session = await this.sessionService.relink(id);
+    await this.auditService.logInfo(AuditAction.SESSION_RELINKED, {
+      sessionId: session.id,
+      sessionName: session.name,
+    });
+    return this.transformSession(session);
+  }
+
   @Get(':id/qr')
   @RequireRole(ApiKeyRole.OPERATOR)
   @ApiOperation({ summary: 'Get QR code for session authentication' })

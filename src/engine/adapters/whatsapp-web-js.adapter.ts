@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Client, LocalAuth, MessageMedia, MessageTypes } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode';
 import * as path from 'path';
+import * as fs from 'fs/promises';
 import {
   IWhatsAppEngine,
   EngineStatus,
@@ -423,6 +424,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
   }
 
   async logout(): Promise<void> {
+    // Revoke the linked device server-side when a live client is available.
     if (this.client) {
       try {
         // Logout clears session data - user will need to scan QR again
@@ -437,7 +439,32 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         }
       }
       this.client = null;
-      this.setStatus(EngineStatus.DISCONNECTED);
+    }
+
+    // Always wipe the persisted LocalAuth so a subsequent initialize() starts from a fresh QR.
+    // This is the guarantee that makes "logout" reliable: a failed server-side logout falls back
+    // to destroy() (which keeps the auth folder), and a logout invoked without a live client
+    // (e.g. re-pairing right after an OpenWA restart) has no client to clear — in both cases the
+    // stale auth would otherwise silently restore the old number on the next start.
+    await this.clearAuthData();
+    this.setStatus(EngineStatus.DISCONNECTED);
+  }
+
+  /**
+   * Removes the on-disk LocalAuth folder for this session (clientId = session name). Best-effort:
+   * a missing folder or a transient fs error is logged, not thrown, so logout/relink never fails on
+   * cleanup. Path mirrors the LocalAuth config in initialize(): {sessionDataPath}/session-{clientId}.
+   */
+  private async clearAuthData(): Promise<void> {
+    const authDir = path.join(
+      path.resolve(this.config.sessionDataPath),
+      `session-${this.config.sessionId}`,
+    );
+    try {
+      await fs.rm(authDir, { recursive: true, force: true });
+      this.logger.log(`Cleared LocalAuth data: ${authDir}`);
+    } catch (error) {
+      this.logger.warn(`Failed to clear LocalAuth data at ${authDir}: ${String(error)}`);
     }
   }
 
