@@ -689,6 +689,13 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
       messageMedia = new MessageMedia(media.mimetype, media.data.toString('base64'), media.filename);
     }
 
+    // MessageMedia.fromUrl names the document after the URL, which for our presigned S3 links
+    // is a long storage key. Always prefer the caller-supplied original filename so the
+    // recipient sees e.g. "Angebot.pdf" instead of "<guid>_Angebot.pdf".
+    if (media.filename) {
+      messageMedia.filename = media.filename;
+    }
+
     const msg = await this.client!.sendMessage(chatId, messageMedia, {
       caption: media.caption,
     });
