@@ -66,11 +66,17 @@ export interface IncomingMessage {
    */
   isLidSender?: boolean;
   /**
-   * Best-effort phone number (MSISDN digits) of the sender, resolved from a privacy id when inline
-   * resolution is enabled (`RESOLVE_LID_TO_PHONE`). `null` when the engine cannot map it. Only
-   * populated for `isLidSender` messages.
+   * Best-effort phone number (MSISDN digits) of the sender, resolved from a privacy id. Resolution is
+   * on by default (opt out with `RESOLVE_LID_TO_PHONE=false`). `null` when the engine cannot map it.
+   * Only populated for inbound `isLidSender` messages.
    */
   senderPhone?: string | null;
+  /**
+   * Best-effort phone number (MSISDN digits) of the RECIPIENT of an outgoing (`fromMe`) message, resolved
+   * when the recipient is a privacy id (`@lid`). Mirrors {@link senderPhone} for the outbound direction so
+   * a consumer can address the conversation partner of a phone-composed self-reply. `null` when unmappable.
+   */
+  recipientPhone?: string | null;
   /** Sender display info, best-effort from the WhatsApp Web contact cache. */
   contact?: {
     name?: string;

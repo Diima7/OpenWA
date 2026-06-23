@@ -55,6 +55,13 @@ export const ACK_RECONCILE_DELAY_MS = 750;
 
 const clampNumber = (n: number, min: number, max: number): number => Math.min(Math.max(n, min), max);
 
+/**
+ * Whether to resolve WhatsApp privacy ids (`@lid`) to phone numbers for inbound senders and outbound
+ * recipients. On by default — LID is now the common addressing for many contacts, and without resolution
+ * downstream consumers can't map the conversation to a phone. Opt out with `RESOLVE_LID_TO_PHONE=false`.
+ */
+const isLidResolutionEnabled = (): boolean => process.env.RESOLVE_LID_TO_PHONE !== 'false';
+
 /** Coerce + clamp the untyped session.config reconnect knobs to finite, bounded values. Defaults
  *  (5000ms / 5 attempts) are preserved; a legitimate `maxReconnectAttempts: 0` (disable) is kept. */
 export function resolveReconnectConfig(
@@ -516,11 +523,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
             // Persist the incoming message so the dashboard chats view can render history.
             const incoming: IncomingMessage = finalMessage;
 
-            // Inline @lid -> phone resolution (#263), opt-in via RESOLVE_LID_TO_PHONE. Best-effort:
-            // attaches senderPhone (digits or null) before persist/dispatch so webhook/ws consumers
-            // get it in a single pass. Only for privacy-id senders, so no lookup for normal numbers.
-            if (process.env.RESOLVE_LID_TO_PHONE === 'true' && incoming.isLidSender && !incoming.fromMe) {
-              incoming.senderPhone = await this.resolveSenderPhone(id, incoming.author ?? incoming.from);
+            // Inline @lid -> phone resolution (#263). On by default now that LID addressing is the norm;
+            // opt out with RESOLVE_LID_TO_PHONE=false. Best-effort: attaches senderPhone (digits or null)
+            // before persist/dispatch so webhook/ws consumers get it in a single pass. Only for privacy-id
+            // senders, so no lookup for normal numbers (and the result is cached per sender).
+            if (isLidResolutionEnabled() && incoming.isLidSender && !incoming.fromMe) {
+              incoming.senderPhone = await this.resolveLidPhone(id, incoming.author ?? incoming.from);
             }
 
             const metadata: Record<string, unknown> = {};
@@ -578,31 +586,36 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         });
         // Update last active timestamp
         void this.sessionRepository.update(id, { lastActiveAt: new Date() });
-        const messageData = { ...message };
 
-        // Execute hook for message sent - plugins can modify or stop processing
-        void this.hookManager
-          .execute('message:sent', messageData, {
+        // Resolve a privacy-id (`@lid`) recipient to its phone, then run the send hook and dispatch.
+        // Wrapped in a fire-and-forget async IIFE (the callback slot is synchronous) so the resolution
+        // await happens before the webhook/ws consumers see the payload — mirroring senderPhone inbound.
+        void (async (): Promise<void> => {
+          const recipient = message.to || message.chatId;
+          if (isLidResolutionEnabled() && recipient?.endsWith('@lid')) {
+            message.recipientPhone = await this.resolveLidPhone(id, recipient);
+          }
+
+          const messageData = { ...message };
+          const { continue: shouldContinue, data: finalMessage } = await this.hookManager.execute('message:sent', messageData, {
             sessionId: id,
             source: 'Engine',
-          })
-          .then(({ continue: shouldContinue, data: finalMessage }) => {
-            if (!shouldContinue) {
-              return;
-            }
+          });
+          if (!shouldContinue) {
+            return;
+          }
 
-            // NOTE: unlike onMessage (incoming), this path intentionally does NOT mirror the message
-            // to the `messages` table. message_create ALSO fires for API-originated sends, which the
-            // REST send path already persists — saving here would double-persist them. Safe
-            // persistence of phone-composed sends needs a unique (sessionId, waMessageId) index +
-            // de-dup and is tracked as a separate enhancement; until then this path only webhooks/
-            // emits. So local message history reflects API sends + all inbound, but not sends
-            // composed on a linked phone.
-            void this.webhookService.dispatch(id, 'message.sent', finalMessage);
-            // Emit real-time event to WebSocket clients (as message.sent, not message.received)
-            this.eventsGateway.emitMessageSent(id, finalMessage);
-          })
-          .catch(err => this.logger.error(`onMessageCreate handler failed for ${id}`, String(err)));
+          // NOTE: unlike onMessage (incoming), this path intentionally does NOT mirror the message
+          // to the `messages` table. message_create ALSO fires for API-originated sends, which the
+          // REST send path already persists — saving here would double-persist them. Safe
+          // persistence of phone-composed sends needs a unique (sessionId, waMessageId) index +
+          // de-dup and is tracked as a separate enhancement; until then this path only webhooks/
+          // emits. So local message history reflects API sends + all inbound, but not sends
+          // composed on a linked phone.
+          void this.webhookService.dispatch(id, 'message.sent', finalMessage);
+          // Emit real-time event to WebSocket clients (as message.sent, not message.received)
+          this.eventsGateway.emitMessageSent(id, finalMessage);
+        })().catch(err => this.logger.error(`onMessageCreate handler failed for ${id}`, String(err)));
       },
       onMessageAck: (messageId, status: DeliveryStatus): void => {
         this.logger.debug(`Message ack: ${messageId} -> ${status}`, {
@@ -1038,11 +1051,12 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
   }
 
   /**
-   * Best-effort resolution of a privacy-id sender (`@lid`) to a phone number for inline attachment on
-   * incoming messages (#263). Cached per session (incl. misses). Never throws — returns null on any
-   * failure or when the engine isn't available. Gated by the caller on `RESOLVE_LID_TO_PHONE`.
+   * Best-effort resolution of a privacy id (`@lid`) to a phone number, for inline attachment on either
+   * an incoming message's sender or an outgoing message's recipient (#263). Cached per session (incl.
+   * misses). Never throws — returns null on any failure or when the engine isn't available. The caller
+   * gates the call on {@link isLidResolutionEnabled}.
    */
-  private async resolveSenderPhone(sessionId: string, contactId: string): Promise<string | null> {
+  private async resolveLidPhone(sessionId: string, contactId: string): Promise<string | null> {
     const key = `${sessionId}:${contactId}`;
     const cached = this.lidPhoneCache.get(key);
     if (cached !== undefined) {
